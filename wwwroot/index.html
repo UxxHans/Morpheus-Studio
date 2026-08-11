@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Morpheus Studio</title>
+<link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div id="sidebarHeader">
+        <h1>Morpheus<span class="brand-sub"> Studio</span></h1>
+        <button id="newSongBtn" class="btn btn-primary" title="新建曲目">
+          <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          新建曲目
+        </button>
+      </div>
+      <div id="searchWrap">
+        <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="searchBox" type="search" placeholder="搜索标题 / 副标题…" />
+      </div>
+      <div id="songList"></div>
+    </aside>
+
+    <main id="main">
+      <div id="emptyState" class="empty-state">
+        <p>从左侧选择一首歌曲，或点击「+ 新建」创建一首。</p>
+      </div>
+
+      <div id="songDetail" class="hidden">
+        <div id="detailHeader">
+          <div id="detailTitleBlock">
+            <span id="detailTitle">—</span>
+            <span id="completenessBadge" class="badge"></span>
+          </div>
+          <nav id="tabs">
+            <button class="tab-btn active" data-tab="config">配置 · 曲目信息</button>
+            <button class="tab-btn" data-tab="chart-Normal">谱面 · 普通难度</button>
+            <button class="tab-btn" data-tab="chart-Hard">谱面 · 困难难度</button>
+          </nav>
+          <div id="detailActions">
+            <button id="revealBtn" class="btn btn-ghost">
+              <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+              在文件夹中显示
+            </button>
+            <button id="deleteSongBtn" class="btn btn-danger">
+              <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+              删除歌曲
+            </button>
+          </div>
+        </div>
+
+        <section id="tab-config" class="tab-panel active"></section>
+        <section id="tab-chart-Normal" class="tab-panel"></section>
+        <section id="tab-chart-Hard" class="tab-panel"></section>
+      </div>
+    </main>
+  </div>
+
+  <div id="toast"></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
