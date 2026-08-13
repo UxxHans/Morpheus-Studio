@@ -302,6 +302,14 @@ html, body {
 .modal-confirm { width: 380px; }
 .modal-message { margin: 0; font-size: 13px; color: var(--text-1); line-height: 1.6; }
 
+.mcz-mode-choices { display: flex; flex-direction: column; gap: 10px; }
+.mcz-mode-btn {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  width: 100%; padding: 12px 14px; text-align: left; white-space: normal;
+}
+.mcz-mode-btn strong { font-size: 13px; color: var(--text-0); }
+.mcz-mode-btn span { font-size: 11.5px; color: var(--text-2); line-height: 1.5; }
+
 /* ── Chart editor ─────────────────────────────────────── */
 .chart-editor { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 

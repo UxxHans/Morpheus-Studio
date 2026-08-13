@@ -1,7 +1,7 @@
 // Port of Downloads/BeatEditorWindow.cs (Unity Editor beatmap tool) onto an HTML canvas.
 // Coordinate math, hit-testing, interaction rules and the CSV format are kept 1:1 with the
 // original so files this produces are read back by MusicCollectionSelection.cs unchanged.
-import { bridge, toast } from "./bridge.js";
+import { bridge, toast, confirmDialog } from "./bridge.js";
 import { SKY_PRESETS, findSkyPresetIndex } from "./skyPresets.js";
 import { difficultyLabel } from "./difficulty.js";
 import { ICONS } from "./icons.js";
@@ -159,6 +159,59 @@ function serializeCsv(notes, timingPoints, skyPoints) {
   return out;
 }
 
+// Small bespoke chooser for the mcz-import options (confirmDialog only supports a
+// single ok/cancel pair, this needs two distinct primary actions). Resolves 0 (direct
+// mapping), 1 (rightmost-lane-is-heavy with 2/4/6/8 fallback), or null (cancelled).
+function openMczModeModal() {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+
+    const dialog = document.createElement("div");
+    dialog.className = "modal-dialog modal-confirm";
+
+    const heading = document.createElement("h2");
+    heading.textContent = "选择导入方式";
+
+    const body = document.createElement("div");
+    body.className = "mcz-mode-choices";
+
+    const opt1 = document.createElement("button");
+    opt1.className = "btn mcz-mode-btn";
+    opt1.innerHTML = `<strong>直接映射</strong><span>mcz 有几条轨道就用几条，全部作为普通音符</span>`;
+
+    const opt2 = document.createElement("button");
+    opt2.className = "btn mcz-mode-btn";
+    opt2.innerHTML = `<strong>重音轨模式</strong><span>最右侧一条轨道作为重音，其余按 2/4/6/8 轨规则回退映射</span>`;
+
+    body.append(opt1, opt2);
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "btn";
+    cancelBtn.innerHTML = ICONS.x(14);
+    cancelBtn.append(document.createTextNode("取消"));
+    actions.append(cancelBtn);
+
+    dialog.append(heading, body, actions);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    function close(result) {
+      overlay.remove();
+      resolve(result);
+    }
+    opt1.addEventListener("click", () => close(0));
+    opt2.addEventListener("click", () => close(1));
+    cancelBtn.addEventListener("click", () => close(null));
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
+    document.addEventListener("keydown", function onKey(e) {
+      if (e.key === "Escape") { document.removeEventListener("keydown", onKey); close(null); }
+    });
+  });
+}
+
 // ── ChartEditor ───────────────────────────────────────────────────────────
 export class ChartEditor {
   constructor(root, difficulty) {
@@ -168,6 +221,15 @@ export class ChartEditor {
     this.rate = 0;
     this.exists = false;
     this.active = false;
+
+    // "horizontal" (default, time flows left→right, header on the left) or "vertical"
+    // (falling-note style: time flows bottom→top, header at the bottom, waveform on
+    // the right). All drawing/hit-testing code below stays written in the original
+    // horizontal-native logical space — _resize()/_canvasPoint() are the only two
+    // places that know about orientation, swapping the logical width/height and
+    // inverse-transforming pointer input respectively. See _fillTextUpright for why
+    // text needs special handling on top of that.
+    this.orientation = "vertical";
 
     this.notes = [];
     this.timingPoints = [];
@@ -180,6 +242,7 @@ export class ChartEditor {
     this.scrollX = 0;
     this.snapEnabled = true;
     this.showBeatGrid = true;
+    this.tripletGrid = false;
     this.metronome = false;
     this.noteCue = true;
     this.playbackRate = 1;
@@ -236,6 +299,7 @@ export class ChartEditor {
           <button data-a="play" class="btn">${ICONS.play(12)}播放</button>
           <button data-a="stop" class="btn" title="回到开头">${ICONS.rewind(12)}重播</button>
           <button data-a="speed" class="toggle" title="0.5 倍速播放">0.5X</button>
+          <button data-a="orientation" class="toggle on" title="切换为竖版下落式布局：时间轴纵向滚动，轨道头在下方，波形图在右侧">竖版</button>
           <div class="sep"></div>
           <label>缩放</label>
           <input data-a="zoom" type="range" min="1" max="1200" value="60" />
@@ -250,6 +314,7 @@ export class ChartEditor {
           <div class="sep"></div>
           <button data-a="snap" class="toggle on" title="创建/拖拽音符时自动吸附到节拍网格">音符吸附</button>
           <button data-a="grid" class="toggle on" title="显示节拍网格线">节拍网格</button>
+          <button data-a="triplet" class="toggle" title="节拍细分切换为三连音（3等分），默认是二分/四分/八分">三连音</button>
           <button data-a="metro" class="toggle" title="播放时按节拍打点提示音">♩ 节拍器</button>
           <button data-a="noteCue" class="toggle on" title="播放时经过音符发出提示音，关闭则听不到音符声音">♪ 音符提示音</button>
           <div class="sep"></div>
@@ -258,6 +323,7 @@ export class ChartEditor {
           <div class="grow"></div>
           <span class="status" data-a="status"></span>
           <button data-a="save" class="btn btn-primary">${ICONS.save(14)}保存谱面</button>
+          <button data-a="importMcz" class="btn" title="从 Malody 谱面包（.mcz）导入音符到当前谱面">${ICONS.upload(14)}导入MCZ</button>
           <button data-a="help" class="btn">${ICONS.book(14)}操作教程</button>
         </div>
         <div id="chartCanvasWrap">
@@ -300,6 +366,7 @@ export class ChartEditor {
       play: this.root.querySelector('[data-a="play"]'),
       stop: this.root.querySelector('[data-a="stop"]'),
       speed: this.root.querySelector('[data-a="speed"]'),
+      orientation: this.root.querySelector('[data-a="orientation"]'),
       zoom: this.root.querySelector('[data-a="zoom"]'),
       tpAdd: this.root.querySelector('[data-a="tpAdd"]'),
       tpDel: this.root.querySelector('[data-a="tpDel"]'),
@@ -308,11 +375,13 @@ export class ChartEditor {
       biasText: this.root.querySelector('[data-a="biasText"]'),
       snap: this.root.querySelector('[data-a="snap"]'),
       grid: this.root.querySelector('[data-a="grid"]'),
+      triplet: this.root.querySelector('[data-a="triplet"]'),
       metro: this.root.querySelector('[data-a="metro"]'),
       noteCue: this.root.querySelector('[data-a="noteCue"]'),
       sky: this.root.querySelector('[data-a="sky"]'),
       status: this.root.querySelector('[data-a="status"]'),
       save: this.root.querySelector('[data-a="save"]'),
+      importMcz: this.root.querySelector('[data-a="importMcz"]'),
       help: this.root.querySelector('[data-a="help"]'),
       helpPanel: this.root.querySelector('[data-a="help-panel"]'),
       emptyPanel: this.root.querySelector('[data-a="empty-panel"]'),
@@ -360,12 +429,21 @@ export class ChartEditor {
       this._stopRaf();
       this._waStopInternal();
       this.playhead = 0;
+      if (this.orientation === "vertical") this._relockScroll();
       this._redraw();
     });
     el.speed.addEventListener("click", () => {
       this.playbackRate = this.playbackRate === 1 ? 0.5 : 1;
       this._waSetRate(this.playbackRate);
       el.speed.classList.toggle("on", this.playbackRate === 0.5);
+    });
+    el.orientation.addEventListener("click", () => {
+      this.orientation = this.orientation === "vertical" ? "horizontal" : "vertical";
+      el.orientation.classList.toggle("on", this.orientation === "vertical");
+      this.wavCache = null;
+      this._resize();
+      if (this.orientation === "vertical") this._relockScroll();
+      this._redraw();
     });
     el.zoom.addEventListener("input", () => {
       this.pps = clamp(parseFloat(el.zoom.value), this._minPps(), 1200);
@@ -416,6 +494,11 @@ export class ChartEditor {
       el.grid.classList.toggle("on", this.showBeatGrid);
       this._redraw();
     });
+    el.triplet.addEventListener("click", () => {
+      this.tripletGrid = !this.tripletGrid;
+      el.triplet.classList.toggle("on", this.tripletGrid);
+      this._redraw();
+    });
     el.metro.addEventListener("click", () => {
       this.metronome = !this.metronome;
       el.metro.classList.toggle("on", this.metronome);
@@ -436,6 +519,7 @@ export class ChartEditor {
       this._redraw();
     });
     el.save.addEventListener("click", () => this.save());
+    el.importMcz.addEventListener("click", () => this._importMcz());
     el.help.addEventListener("click", () => el.helpPanel.classList.toggle("hidden"));
     el.createChart.addEventListener("click", () => this._createChart());
 
@@ -543,6 +627,47 @@ export class ChartEditor {
     }
   }
 
+  async _importMcz() {
+    if (!this.song) return;
+    const mczPath = await bridge.call("pickMczFile");
+    if (!mczPath) return;
+    const mode = await openMczModeModal();
+    if (mode === null) return;
+
+    let result;
+    try {
+      result = await bridge.call("importMcz", { mczPath, mode });
+    } catch (err) {
+      toast(String(err.message || err), true);
+      return;
+    }
+
+    if (this.notes.length > 0) {
+      const ok = await confirmDialog(
+        `当前谱面已有 ${this.notes.length} 个音符，导入会整体替换所有音符和 BPM 点。确定继续吗？`,
+        { title: "导入 MCZ", confirmText: "替换", danger: true },
+      );
+      if (!ok) return;
+    }
+
+    this.selectedNotes.clear();
+    this.selectedTp = null;
+    this.selectedSky = null;
+    this.notes = result.notes.map((n) => ({ track: n.track, startTime: n.startTime, endTime: n.endTime, category: n.category }));
+    this.timingPoints = result.timingPoints.map((t) => ({ startTime: t.startTime, bpm: t.bpm, offset: t.offset }));
+    this.notes.sort((a, b) => a.startTime - b.startTime);
+    this.timingPoints.sort((a, b) => a.startTime - b.startTime);
+    if (this.timingPoints.length > 0) this._selectTp(this.timingPoints[0]);
+    this.undoSnapshot = null;
+    this._redraw();
+
+    let msg = `已从 mcz 导入 ${this.notes.length} 个音符`;
+    if (result.warnings && result.warnings.length) msg += "；" + result.warnings.join("；");
+    toast(msg);
+
+    await this.save();
+  }
+
   destroy() {
     this._stopRaf();
     this._waStopInternal();
@@ -619,18 +744,31 @@ export class ChartEditor {
     }
   }
 
+  // Everything below (drawing, hit-testing, dragging) is written once, in a single
+  // "logical" space that's always horizontal-native: logical-x is the time axis,
+  // logical-y is the track axis, exactly as if orientation were always "horizontal".
+  // Vertical mode reuses all of that unchanged — it only swaps what _canvasCssW/H
+  // (the logical bounds) resolve to, and rotates the canvas transform so logical-x
+  // (time) ends up running bottom→top on screen and logical-y (tracks) left→right.
+  // _canvasPoint() applies the matching inverse so pointer input lands back in the
+  // same logical space every interaction handler already expects.
   _resize() {
     const dpr = window.devicePixelRatio || 1;
     // Read-only measurement — the canvas's own CSS box comes purely from `inset:0`
     // in app.css, so nothing here ever writes a size back onto the canvas element.
     const rect = this.el.wrap.getBoundingClientRect();
-    const w = Math.max(200, Math.round(rect.width));
-    const h = Math.max(200, Math.round(rect.height));
+    const realW = Math.max(200, Math.round(rect.width));
+    const realH = Math.max(200, Math.round(rect.height));
+    this.el.canvas.width = Math.round(realW * dpr);
+    this.el.canvas.height = Math.round(realH * dpr);
+
+    const vertical = this.orientation === "vertical";
+    const w = vertical ? realH : realW;
+    const h = vertical ? realW : realH;
     this._canvasCssW = w;
     this._canvasCssH = h;
-    this.el.canvas.width = Math.round(w * dpr);
-    this.el.canvas.height = Math.round(h * dpr);
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (vertical) this.ctx.setTransform(0, -dpr, dpr, 0, 0, w * dpr);
+    else this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // Sky lane + the 10 note tracks scale together to fill whatever vertical space is
     // left after the waveform strip and scrollbar, which stay a fixed pixel height.
@@ -649,6 +787,17 @@ export class ChartEditor {
     this._waveformRect = { y: this._skyLaneH + this._tracksTotalH, h: WAVEFORM_H };
     this._scrollbarRect = { y: this._skyLaneH + this._tracksTotalH + WAVEFORM_H, h: SCROLLBAR_H };
     this.pps = clamp(this.pps, this._minPps(), 1200);
+    if (this.orientation === "vertical") {
+      // A plain window resize changes _canvasCssW same as an orientation flip does —
+      // the lock invariant has to survive that too, so re-derive scrollX from playhead
+      // rather than just clamping whatever it currently is.
+      this._relockScroll();
+    } else {
+      // A resize can strand scrollX past the new maximum — pps above already gets its
+      // own clamp, scrollX needs the matching one.
+      const maxScroll = Math.max(0, this.duration * this.pps - (this._canvasCssW - HEADER_WIDTH));
+      this.scrollX = clamp(this.scrollX, 0, maxScroll);
+    }
   }
 
   _updateStatus() {
@@ -679,6 +828,25 @@ export class ChartEditor {
     this._drawScrollbar();
   }
 
+  // The rotation baked into _resize()'s vertical-mode transform would otherwise turn
+  // every fillText call sideways along with the shapes. Text needs to stay upright, so
+  // every fillText in this file goes through here instead: translate to the logical
+  // point (which the ambient transform already places correctly on screen) then apply
+  // a local +90° rotation that exactly cancels the ambient -90° for this one call,
+  // leaving position correct and orientation upright. No-op in horizontal mode.
+  _fillTextUpright(text, lx, ly) {
+    if (this.orientation !== "vertical") {
+      this.ctx.fillText(text, lx, ly);
+      return;
+    }
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.translate(lx, ly);
+    ctx.rotate(Math.PI / 2);
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
+  }
+
   _drawSkyLane() {
     // Blue reads unambiguously as "sky" and is distinct from both the orange accent and
     // the disabled-track gray, so this lane can't be mistaken for a grayed-out one.
@@ -691,7 +859,7 @@ export class ChartEditor {
     ctx.font = "13px 'Segoe UI'";
     ctx.textBaseline = "middle";
     ctx.textAlign = "center";
-    ctx.fillText("天空区", HEADER_WIDTH / 2, area.y + area.h / 2);
+    this._fillTextUpright("天空区", HEADER_WIDTH / 2, area.y + area.h / 2);
 
     for (const sp of this.skyPoints) {
       const x0 = this._timeToX(sp.startTime), x1 = this._timeToX(sp.endTime);
@@ -736,7 +904,7 @@ export class ChartEditor {
       ctx.font = "13px 'Segoe UI'";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(trackLabel(track), HEADER_WIDTH / 2, y + th / 2);
+      this._fillTextUpright(trackLabel(track), HEADER_WIDTH / 2, y + th / 2);
 
       ctx.fillStyle = "rgb(18,18,18)";
       ctx.fillRect(0, y + th - 1, w, 1);
@@ -774,31 +942,59 @@ export class ChartEditor {
     ctx.restore();
   }
 
+  // Two passes, both phase-anchored on tp.offset like before:
+  //  1. Beat lines, dark red, ALWAYS drawn — spacing adapts in powers of 2 (1, 2, 4, 8...
+  //     beats) so there's always something legible on screen regardless of zoom, instead
+  //     of the grid disappearing once a fixed subdivision gets too dense to draw.
+  //  2. Sub-beat subdivisions — binary (halves down to 1/8 beat) or triplet (thirds down
+  //     to 1/6 beat) depending on the toggle — only drawn once they're legible; the beat
+  //     lines above are always there as the fallback, so this can simply skip itself at
+  //     low zoom rather than needing its own "never disappear" handling.
   _drawBeatGrid(area) {
     const ctx = this.ctx;
     const viewStart = this._xToTime(HEADER_WIDTH);
     const viewEnd = this._xToTime(this._canvasCssW);
+    const MIN_PX_BEAT = 8;
+    const MIN_PX_FINE = 3;
     for (let ti = 0; ti < this.timingPoints.length; ti++) {
       const tp = this.timingPoints[ti];
       if (tp.bpm <= 0) continue;
       const segStart = tp.startTime;
       const segEnd = ti + 1 < this.timingPoints.length ? this.timingPoints[ti + 1].startTime : viewEnd + 1;
       if (segEnd < viewStart || segStart > viewEnd) continue;
-      const grid8 = 60 / tp.bpm / 8;
-      if (grid8 * this.pps < 3) continue;
+      const beatDur = 60 / tp.bpm;
       const drawStart = Math.max(segStart, viewStart), drawEnd = Math.min(segEnd, viewEnd);
-      const i0 = Math.floor((drawStart - tp.offset) / grid8);
-      const i1 = Math.ceil((drawEnd - tp.offset) / grid8) + 1;
-      for (let i = i0; i <= i1; i++) {
-        const t = tp.offset + i * grid8;
+
+      // Pass 1: beat lines.
+      const rawStep = MIN_PX_BEAT / (beatDur * this.pps);
+      const beatStep = rawStep <= 1 ? 1 : Math.pow(2, Math.ceil(Math.log2(rawStep)));
+      const beatUnit = beatDur * beatStep;
+      const b0 = Math.floor((drawStart - tp.offset) / beatUnit);
+      const b1 = Math.ceil((drawEnd - tp.offset) / beatUnit) + 1;
+      for (let i = b0; i <= b1; i++) {
+        const t = tp.offset + i * beatUnit;
         if (t < segStart - 0.0001 || t > segEnd + 0.0001) continue;
         const x = this._timeToX(t);
         if (x < HEADER_WIDTH) continue;
-        const sub = ((i % 8) + 8) % 8;
-        if (sub === 0) ctx.fillStyle = "rgba(153,153,153,.85)";
-        else if (sub === 4) ctx.fillStyle = "rgba(122,122,122,.65)";
-        else if (sub === 2 || sub === 6) ctx.fillStyle = "rgba(92,92,92,.5)";
-        else ctx.fillStyle = "rgba(71,71,71,.35)";
+        ctx.fillStyle = "rgba(180,45,45,.8)";
+        ctx.fillRect(x, area.y, 1, area.h);
+      }
+
+      // Pass 2: sub-beat subdivisions.
+      const divs = this.tripletGrid ? 6 : 8;
+      const fineUnit = beatDur / divs;
+      if (fineUnit * this.pps < MIN_PX_FINE) continue;
+      const i0 = Math.floor((drawStart - tp.offset) / fineUnit);
+      const i1 = Math.ceil((drawEnd - tp.offset) / fineUnit) + 1;
+      for (let i = i0; i <= i1; i++) {
+        const sub = ((i % divs) + divs) % divs;
+        if (sub === 0) continue; // on-beat — pass 1 above already drew this one, in red
+        const t = tp.offset + i * fineUnit;
+        if (t < segStart - 0.0001 || t > segEnd + 0.0001) continue;
+        const x = this._timeToX(t);
+        if (x < HEADER_WIDTH) continue;
+        if (this.tripletGrid) ctx.fillStyle = sub === 2 || sub === 4 ? "rgba(122,122,122,.65)" : "rgba(71,71,71,.35)";
+        else ctx.fillStyle = sub === 4 ? "rgba(122,122,122,.65)" : sub === 2 || sub === 6 ? "rgba(92,92,92,.5)" : "rgba(71,71,71,.35)";
         ctx.fillRect(x, area.y, 1, area.h);
       }
     }
@@ -847,7 +1043,7 @@ export class ChartEditor {
         ctx.fillRect(x, area.y, 1, area.h);
       }
       ctx.fillStyle = "rgb(166,166,166)";
-      ctx.fillText(this._formatTime(t), x + 2, area.y);
+      this._fillTextUpright(this._formatTime(t), x + 2, area.y);
     }
   }
 
@@ -909,7 +1105,7 @@ export class ChartEditor {
     ctx.font = "9px 'Segoe UI'";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
-    ctx.fillText(this.song?.title || "No Audio", 12, area.y + 10);
+    this._fillTextUpright(this.song?.title || "No Audio", 12, area.y + 10);
     if (!this.audioBuffer) return;
 
     const drawW = Math.floor(w - HEADER_WIDTH);
@@ -971,7 +1167,7 @@ export class ChartEditor {
     ctx.font = "bold 9px 'Segoe UI'";
     ctx.textAlign = "left";
     ctx.textBaseline = "bottom";
-    ctx.fillText(this._formatTime(this.playhead), x + 3, bottom);
+    this._fillTextUpright(this._formatTime(this.playhead), x + 3, bottom);
   }
 
   _drawScrollbar() {
@@ -1011,6 +1207,14 @@ export class ChartEditor {
     this._scrollbarGeom = { centerX, centerW, leftHandleX, rightHandleX, barW, usableW };
   }
 
+  // Vertical mode's playhead is pinned at the header — this recomputes the scrollX
+  // that keeps it there for the current this.playhead, clamped like every other
+  // scrollX update so it still relaxes normally right at the very end of the song.
+  _relockScroll() {
+    const maxScroll = Math.max(0, this.duration * this.pps - (this._canvasCssW - HEADER_WIDTH));
+    this.scrollX = clamp(this.playhead * this.pps, 0, maxScroll);
+  }
+
   // ── Playback ──────────────────────────────────────────────────────────
   // Plays straight from the decoded AudioBuffer via Web Audio's sample-accurate
   // scheduling — no separate <audio> element, no its start/seek latency, no its
@@ -1040,9 +1244,16 @@ export class ChartEditor {
         this._waStopInternal();
         this.playhead = this.duration;
       }
-      const phX = this._timeToX(this.playhead);
-      if (phX < HEADER_WIDTH || phX > this._canvasCssW)
-        this.scrollX = Math.max(0, this.playhead * this.pps - (this._canvasCssW - HEADER_WIDTH) * 0.25);
+      if (this.orientation === "vertical") {
+        // Falling-note simulation: the red line stays pinned exactly at the header
+        // instead of jumping only once it scrolls off-screen — the chart scrolls
+        // continuously past it instead, every frame, for the whole song.
+        this._relockScroll();
+      } else {
+        const phX = this._timeToX(this.playhead);
+        if (phX < HEADER_WIDTH || phX > this._canvasCssW)
+          this.scrollX = Math.max(0, this.playhead * this.pps - (this._canvasCssW - HEADER_WIDTH) * 0.25);
+      }
 
       for (const note of this.notes) {
         if (!this._blippedNotes.has(note) && note.startTime > prev && note.startTime <= this.playhead) {
@@ -1156,20 +1367,38 @@ export class ChartEditor {
   }
 
   // ── Pointer helpers ───────────────────────────────────────────────────
+  // Inverse of the _resize() rotation: every interaction handler below works purely
+  // in logical (horizontal-native) space, so real screen coordinates get mapped back
+  // into it right here, once, rather than each handler knowing about orientation.
   _canvasPoint(e) {
     const r = this.el.canvas.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    const sx = e.clientX - r.left, sy = e.clientY - r.top;
+    if (this.orientation === "vertical") return { x: this._canvasCssW - sy, y: sx };
+    return { x: sx, y: sy };
   }
 
   _onWheel(e) {
     e.preventDefault();
     const pt = this._canvasPoint(e);
+    const vertical = this.orientation === "vertical";
     if (e.ctrlKey || e.altKey) {
-      const pivot = this._xToTime(pt.x);
+      // Must be read before pps changes below — it's the time the old pps/scrollX
+      // resolve pt.x to, used afterward to re-derive scrollX under the new pps.
+      const pivot = vertical ? 0 : this._xToTime(pt.x);
       this.pps = clamp(this.pps * (1 - e.deltaY * 0.0012), this._minPps(), 1200);
-      const maxScroll = Math.max(0, this.duration * this.pps - (this._canvasCssW - HEADER_WIDTH));
-      this.scrollX = clamp(pivot * this.pps - (pt.x - HEADER_WIDTH), 0, maxScroll);
+      if (vertical) {
+        // Always zooms anchored on the red line (the playhead) rather than the mouse
+        // position — the header is a fixed invariant here, so there's no other point
+        // that would keep it pinned.
+        this._relockScroll();
+      } else {
+        const maxScroll = Math.max(0, this.duration * this.pps - (this._canvasCssW - HEADER_WIDTH));
+        this.scrollX = clamp(pivot * this.pps - (pt.x - HEADER_WIDTH), 0, maxScroll);
+      }
       this.wavCache = null;
+    } else if (vertical) {
+      this.playhead = clamp(this.playhead + (e.deltaY * 0.3) / this.pps, 0, this.duration);
+      this._relockScroll();
     } else {
       const maxS = Math.max(0, this.duration * this.pps - (this._canvasCssW - HEADER_WIDTH));
       this.scrollX = clamp(this.scrollX + e.deltaY * 0.3, 0, maxS);
@@ -1228,12 +1457,14 @@ export class ChartEditor {
     // Scrollbar
     if (this._scrollbarRect && pt.y >= this._scrollbarRect.y && e.button === 0) {
       const g = this._scrollbarGeom;
-      this._sbDragStartX = pt.x;
+      const sbx = pt.x;
+      this._sbDragStartX = sbx;
       this._sbDragStartVisS = this.scrollX / this.pps;
       this._sbDragStartVisE = (this.scrollX + (this._canvasCssW - HEADER_WIDTH)) / this.pps;
-      if (pt.x >= g.leftHandleX && pt.x <= g.leftHandleX + HANDLE_W) this._sbDrag = 1;
-      else if (pt.x >= g.rightHandleX && pt.x <= g.rightHandleX + HANDLE_W) this._sbDrag = 3;
-      else if (pt.x >= g.centerX && pt.x <= g.centerX + g.centerW) this._sbDrag = 2;
+      this._sbDragStartPlayhead = this.playhead;
+      if (sbx >= g.leftHandleX && sbx <= g.leftHandleX + HANDLE_W) this._sbDrag = 1;
+      else if (sbx >= g.rightHandleX && sbx <= g.rightHandleX + HANDLE_W) this._sbDrag = 3;
+      else if (sbx >= g.centerX && sbx <= g.centerX + g.centerW) this._sbDrag = 2;
       else this._sbDrag = 0;
       if (this._sbDrag) { this.el.canvas.setPointerCapture(e.pointerId); return; }
     }
@@ -1246,13 +1477,17 @@ export class ChartEditor {
       this.el.canvas.setPointerCapture(e.pointerId);
       return;
     }
-    // Right button = seek
+    // Right button = seek. In vertical mode the red line is locked to the header —
+    // this jump still targets wherever was clicked (same as horizontal), it's just the
+    // chart that moves to bring that position under the line, not the line itself.
     if (e.button === 2) {
       this.playing = false;
       this._waStopInternal();
       this._stopRaf();
       this.playhead = clamp(this._xToTime(pt.x), 0, this.duration);
       this._seeking = true;
+      this._seekLastX = pt.x;
+      if (this.orientation === "vertical") this._relockScroll();
       this.el.canvas.setPointerCapture(e.pointerId);
       this._redraw();
       return;
@@ -1347,6 +1582,7 @@ export class ChartEditor {
     if (this._sbDrag) {
       const dur = Math.max(this.duration, 1);
       const usableW = this._scrollbarGeom.usableW;
+      const sbx = pt.x;
       // Exact inverse of the centerX(visStart) formula in _drawScrollbar — mapping the
       // mouse's absolute x straight back to a time value (rather than accumulating a
       // delta) guarantees the handle tracks the cursor exactly, with no room for the
@@ -1354,13 +1590,13 @@ export class ChartEditor {
       const timeAtX = (x) => ((x - HANDLE_W) / usableW) * dur;
       let newVisS = this._sbDragStartVisS, newVisE = this._sbDragStartVisE;
       if (this._sbDrag === 1) {
-        newVisS = clamp(timeAtX(pt.x), 0, newVisE - 0.5);
+        newVisS = clamp(timeAtX(sbx), 0, newVisE - 0.5);
       } else if (this._sbDrag === 3) {
-        newVisE = clamp(timeAtX(pt.x), newVisS + 0.5, dur);
+        newVisE = clamp(timeAtX(sbx), newVisS + 0.5, dur);
       } else {
         // Panning the center — keep the visible window's width constant while clamping
         // it to [0, dur] instead of letting it drag past either end unboundedly.
-        const delta = pt.x - this._sbDragStartX;
+        const delta = sbx - this._sbDragStartX;
         const deltaTime = (delta / usableW) * dur;
         const width = this._sbDragStartVisE - this._sbDragStartVisS;
         newVisS = this._sbDragStartVisS + deltaTime;
@@ -1370,12 +1606,30 @@ export class ChartEditor {
       }
       const visibleW = this._canvasCssW - HEADER_WIDTH;
       this.pps = clamp(visibleW / Math.max(newVisE - newVisS, 0.1), this._minPps(), 1200);
-      // newVisS/newVisE were clamped in time-space, but re-clamping pps against its own
-      // [minPps, 1200] bounds just above can shift the time->pixel ratio slightly out
-      // from under that clamp — so scrollX still needs its own authoritative ceiling,
-      // not just the existing floor of 0, to fully stop the small residual overshoot.
-      const maxScroll = Math.max(0, this.duration * this.pps - visibleW);
-      this.scrollX = clamp(newVisS * this.pps, 0, maxScroll);
+      if (this.orientation === "vertical") {
+        // visStart tracks playhead under the lock, so a center-drag (pan) shifts
+        // playhead by however much newVisS actually moved (post-clamp); a handle-drag
+        // (zoom) leaves playhead where it is — either way _relockScroll() below is
+        // what actually derives the final scrollX, not newVisS directly.
+        if (this._sbDrag === 2) {
+          // deltaTime here is an absolute offset from where the drag started, not a
+          // per-event increment — it has to be added onto the FIXED playhead the drag
+          // started at, not onto this.playhead as it currently stands (which already
+          // includes every earlier event's shift). Compounding it onto a moving target
+          // is exactly what made the thumb run away on its own.
+          const deltaTime = newVisS - this._sbDragStartVisS;
+          this.playhead = clamp(this._sbDragStartPlayhead + deltaTime, 0, this.duration);
+        }
+        this._relockScroll();
+      } else {
+        // newVisS/newVisE were clamped in time-space, but re-clamping pps against its
+        // own [minPps, 1200] bounds just above can shift the time->pixel ratio slightly
+        // out from under that clamp — so scrollX still needs its own authoritative
+        // ceiling, not just the existing floor of 0, to fully stop the small residual
+        // overshoot.
+        const maxScroll = Math.max(0, this.duration * this.pps - visibleW);
+        this.scrollX = clamp(newVisS * this.pps, 0, maxScroll);
+      }
       this.wavCache = null;
       this._redraw();
       return;
@@ -1384,14 +1638,31 @@ export class ChartEditor {
     if (this._panning) {
       const dx = pt.x - this._panLastX;
       this._panLastX = pt.x;
-      const maxScroll = Math.max(0, this.duration * this.pps - (this._canvasCssW - HEADER_WIDTH));
-      this.scrollX = clamp(this.scrollX - dx, 0, maxScroll);
+      if (this.orientation === "vertical") {
+        this.playhead = clamp(this.playhead - dx / this.pps, 0, this.duration);
+        this._relockScroll();
+      } else {
+        const maxScroll = Math.max(0, this.duration * this.pps - (this._canvasCssW - HEADER_WIDTH));
+        this.scrollX = clamp(this.scrollX - dx, 0, maxScroll);
+      }
       this._redraw();
       return;
     }
 
     if (this._seeking) {
-      this.playhead = clamp(this._xToTime(pt.x), 0, this.duration);
+      if (this.orientation === "vertical") {
+        // Absolute _xToTime(pt.x) would fight with _relockScroll() here — scrollX is
+        // derived from playhead every frame in this mode, so re-deriving playhead from
+        // a pt.x measured against that same (just-changed) scrollX is circular and
+        // drifts. Tracking the cursor's own frame-to-frame delta instead — the same
+        // pattern panning already uses — sidesteps that entirely.
+        const dx = pt.x - this._seekLastX;
+        this._seekLastX = pt.x;
+        this.playhead = clamp(this.playhead + dx / this.pps, 0, this.duration);
+        this._relockScroll();
+      } else {
+        this.playhead = clamp(this._xToTime(pt.x), 0, this.duration);
+      }
       this._redraw();
       return;
     }

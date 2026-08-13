@@ -97,6 +97,12 @@ public class Bridge
             case "pickImageFile":
                 return Task.FromResult<object?>(PickFile("Image Files|*.jpg;*.jpeg;*.png"));
 
+            case "pickMczFile":
+                return Task.FromResult<object?>(PickFile("Malody Chart (*.mcz)|*.mcz"));
+
+            case "importMcz":
+                return Task.FromResult<object?>(MczImportService.Import(Str(p, "mczPath"), Int(p, "mode")));
+
             case "revealFolder":
                 RevealFolder(Str(p, "folder"));
                 return Task.FromResult<object?>(true);
