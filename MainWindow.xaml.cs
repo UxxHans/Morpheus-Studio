@@ -34,6 +34,15 @@ public partial class MainWindow : Window
         var env = await CoreWebView2Environment.CreateAsync(userDataFolder: userDataFolder);
         await Web.EnsureCoreWebView2Async(env);
 
+        // Lock content rendering at a fixed 100% — Ctrl+scroll/Ctrl+Plus-Minus browser
+        // zoom is a normal WebView2 gesture, easy to trigger by accident while using
+        // Ctrl+wheel for the timeline's own pps zoom (chartEditor.js's _onWheel), and it
+        // changes window.devicePixelRatio out from under the canvas without the app's
+        // own resize math having a reason to know about it. Disabling the gesture and
+        // pinning ZoomFactor removes that whole class of drift instead of chasing it.
+        Web.CoreWebView2.Settings.IsZoomControlEnabled = false;
+        Web.ZoomFactor = 1.0;
+
 #if DEBUG
         // Dev convenience: if the live source wwwroot is present on this machine, serve
         // straight from disk instead of the embedded copy — edit a .js/.css file, hit
