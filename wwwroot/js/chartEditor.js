@@ -1397,7 +1397,10 @@ export class ChartEditor {
       }
       this.wavCache = null;
     } else if (vertical) {
-      this.playhead = clamp(this.playhead + (e.deltaY * 0.3) / this.pps, 0, this.duration);
+      // Reversed vs the horizontal-mode scroll below — vertical mode's logical time
+      // axis renders bottom→top on screen (see _canvasPoint), so a plain deltaY sign
+      // reads backwards to the eye here even though it matches horizontal exactly.
+      this.playhead = clamp(this.playhead - (e.deltaY * 0.3) / this.pps, 0, this.duration);
       this._relockScroll();
     } else {
       const maxS = Math.max(0, this.duration * this.pps - (this._canvasCssW - HEADER_WIDTH));
