@@ -9,6 +9,7 @@
     <AssemblyName>MorpheusStudio</AssemblyName>
     <RootNamespace>BeatMapStudio</RootNamespace>
     <ApplicationIcon>AppIcon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <Company>Rainbow Cat Studio</Company>
     <Product>Morpheus Studio</Product>
     <AssemblyTitle>Morpheus Studio</AssemblyTitle>
