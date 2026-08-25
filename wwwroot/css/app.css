@@ -342,8 +342,10 @@ html, body {
    it visually stretches during a live window drag with zero JS involvement, same as any
    other absolutely positioned element. JS only ever *reads* the rendered size (to size
    the backing pixel buffer, debounced — see chartEditor.js) and never writes a size back
-   onto the canvas, so there is no path left for it to influence its own container. */
-#chartCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+   onto the canvas, so there is no path left for it to influence its own container.
+   Using a class (not #id) because both ChartEditor instances share the same DOM
+   simultaneously — duplicate IDs are invalid and would prevent the rule from matching. */
+.chart-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
 .chart-help {
   position: absolute; top: 8px; right: 8px; width: 300px; max-height: calc(100% - 16px);

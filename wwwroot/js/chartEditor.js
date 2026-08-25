@@ -327,7 +327,7 @@ export class ChartEditor {
           <button data-a="help" class="btn">${ICONS.book(14)}操作教程</button>
         </div>
         <div id="chartCanvasWrap">
-          <canvas data-a="canvas"></canvas>
+          <canvas class="chart-canvas" data-a="canvas"></canvas>
           <div class="chart-help hidden" data-a="help-panel">
             <div class="chart-help-title">指南</div>
             <h4>键盘</h4>
